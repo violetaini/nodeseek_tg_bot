@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="banner.jpg" alt="NodeSeek Bot Banner" width="400" />
+  <img src="banner.jpg" alt="NodeSeek Bot Banner" width="150" />
   <h1>NodeSeek Telegram RSS Bot 🚀</h1>
   <p>
     <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a> | <a href="README_zh-TW.md">繁體中文</a> | <a href="README_ja.md">日本語</a>
