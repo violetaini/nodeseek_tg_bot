@@ -47,7 +47,6 @@ class AsyncDBManager:
         self.db_path = db_path
 
     async def init_db(self):
-        """初始化表结构"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("""
@@ -271,7 +270,6 @@ class NodeSeekBot:
     
     @staticmethod
     def update_poller_job(context: ContextTypes.DEFAULT_TYPE, new_interval: int):
-        """动态更新轮询任务的间隔"""
         jobs = context.job_queue.get_jobs_by_name("rss_poller")
         for job in jobs:
             job.schedule_removal()
@@ -302,27 +300,100 @@ class NodeSeekBot:
 
         return InlineKeyboardMarkup(keyboard)
 
+    # --------------------------
+    # 快捷指令模块
+    # --------------------------
     @classmethod
     async def start_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
         if not await cls.check_permission(user_id):
-            await update.message.reply_text("⛔ 当前机器人处于<b>私有模式</b>，仅管理员可用。", parse_mode=ParseMode.HTML)
+            await update.message.reply_text("⛔ 当前处于私有模式，仅管理员可用。", parse_mode=ParseMode.HTML)
             return
 
         await db.add_user(user_id)
         context.user_data.clear()
-
         text = (
             "👋 <b>欢迎使用 NodeSeek RSS 监控助手</b>\n\n"
-            "你可以通过下方按钮自定义属于你的屏蔽规则（关键词、用户名）。\n"
-            "所有用户的规则完全独立，互不影响。"
+            "你可以通过下方按钮或直接使用快捷指令来管理你的规则。\n"
+            "输入 /help 查看所有可用指令。"
         )
-        await update.message.reply_text(
-            text, 
-            reply_markup=await cls.build_main_menu(user_id), 
-            parse_mode=ParseMode.HTML
+        await update.message.reply_text(text, reply_markup=await cls.build_main_menu(user_id), parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def help_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await cls.check_permission(update.effective_user.id): return
+        text = (
+            "📖 <b>NodeSeek Bot 帮助指南</b>\n\n"
+            "<b>📱 交互菜单:</b>\n"
+            "/start - 打开可视化设置菜单\n\n"
+            "<b>⌨️ 快捷添加与删除 (支持空格分隔批量操作):</b>\n"
+            "/add_kw 词1 词2 - 添加屏蔽词\n"
+            "/del_kw 词1 - 删除屏蔽词\n"
+            "/add_user 名字 - 屏蔽某用户\n"
+            "/del_user 名字 - 解除屏蔽某用户\n\n"
+            "<b>🔍 其他指令:</b>\n"
+            "/list - 查看我当前的配置情况\n"
+            "/set_interval 秒数 - (仅管理员) 设置轮询间隔"
         )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def list_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await cls.check_permission(user_id): return
+        kws = await db.get_user_list_data(user_id, "user_blocked_keywords", "keyword")
+        aus = await db.get_user_list_data(user_id, "user_blocked_authors", "author")
+        is_active = await db.is_user_active(user_id)
+
+        text = (
+            f"📊 <b>我的配置概览</b>\n\n"
+            f"• <b>推送状态</b>: {'🟢 开启中' if is_active else '🔴 已暂停'}\n"
+            f"• <b>屏蔽词 ({len(kws)}个)</b>: <code>{html.escape('、'.join(kws)) if kws else '无'}</code>\n"
+            f"• <b>屏蔽用户 ({len(aus)}个)</b>: <code>{html.escape('、'.join(aus)) if aus else '无'}</code>\n"
+        )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def add_kw_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await cls.check_permission(user_id): return
+        if not context.args:
+            await update.message.reply_text("⚠️ 用法: /add_kw <词1> [词2] ...\n示例: /add_kw 出鸡 找鸡")
+            return
+        await db.add_user_items(user_id, "user_blocked_keywords", "keyword", context.args)
+        await update.message.reply_text(f"✅ 成功添加屏蔽词: {html.escape(', '.join(context.args))}", parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def del_kw_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await cls.check_permission(user_id): return
+        if not context.args:
+            await update.message.reply_text("⚠️ 用法: /del_kw <词1> [词2] ...")
+            return
+        for kw in context.args:
+            await db.remove_user_item(user_id, "user_blocked_keywords", "keyword", kw)
+        await update.message.reply_text(f"✅ 成功删除屏蔽词: {html.escape(', '.join(context.args))}", parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def add_user_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await cls.check_permission(user_id): return
+        if not context.args:
+            await update.message.reply_text("⚠️ 用法: /add_user <用户名1> [用户名2] ...")
+            return
+        await db.add_user_items(user_id, "user_blocked_authors", "author", context.args)
+        await update.message.reply_text(f"✅ 成功屏蔽用户: {html.escape(', '.join(context.args))}", parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def del_user_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not await cls.check_permission(user_id): return
+        if not context.args:
+            await update.message.reply_text("⚠️ 用法: /del_user <用户名1> [用户名2] ...")
+            return
+        for au in context.args:
+            await db.remove_user_item(user_id, "user_blocked_authors", "author", au)
+        await update.message.reply_text(f"✅ 成功解除屏蔽用户: {html.escape(', '.join(context.args))}", parse_mode=ParseMode.HTML)
 
     @classmethod
     async def set_interval_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -340,6 +411,10 @@ class NodeSeekBot:
         except (IndexError, ValueError):
             await update.message.reply_text("用法: /set_interval <秒数>")
 
+
+    # --------------------------
+    # 交互菜单模块
+    # --------------------------
     @classmethod
     async def callback_router(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -596,8 +671,17 @@ async def main():
     logger.info("构建 Telegram Application...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # 注册指令
     app.add_handler(CommandHandler("start", NodeSeekBot.start_cmd))
+    app.add_handler(CommandHandler("help", NodeSeekBot.help_cmd))
+    app.add_handler(CommandHandler("list", NodeSeekBot.list_cmd))
+    app.add_handler(CommandHandler("add_kw", NodeSeekBot.add_kw_cmd))
+    app.add_handler(CommandHandler("del_kw", NodeSeekBot.del_kw_cmd))
+    app.add_handler(CommandHandler("add_user", NodeSeekBot.add_user_cmd))
+    app.add_handler(CommandHandler("del_user", NodeSeekBot.del_user_cmd))
     app.add_handler(CommandHandler("set_interval", NodeSeekBot.set_interval_cmd))
+    
+    # 注册回调与消息
     app.add_handler(CallbackQueryHandler(NodeSeekBot.callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, NodeSeekBot.handle_user_text))
 
@@ -610,13 +694,19 @@ async def main():
 
     logger.info("Bot 已上线启动...")
     await app.initialize()
-    
+
     # 自动注册 Telegram 斜杠快捷指令菜单
     await app.bot.set_my_commands([
-        ("start", "启动助手并打开主菜单"),
+        ("start", "打开可视化菜单面板"),
+        ("help", "查看指令帮助与使用说明"),
+        ("list", "查看我当前的各项配置"),
+        ("add_kw", "快速添加屏蔽词"),
+        ("del_kw", "快速删除屏蔽词"),
+        ("add_user", "快速添加屏蔽用户"),
+        ("del_user", "快速解除屏蔽用户"),
         ("set_interval", "⚙️ 设置 RSS 轮询间隔(仅管理员)")
     ])
-    
+
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
     
