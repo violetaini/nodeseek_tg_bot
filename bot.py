@@ -148,6 +148,16 @@ class AsyncDBManager:
             await db.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
             await db.commit()
 
+    async def get_user_items_with_id(self, user_id: int, table: str, field: str) -> List[Tuple[int, str]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(f"SELECT id, {field} FROM {table} WHERE user_id = ?", (user_id,)) as cursor:
+                return [(row[0], row[1]) for row in await cursor.fetchall()]
+
+    async def remove_user_item_by_id(self, user_id: int, table: str, item_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(f"DELETE FROM {table} WHERE user_id = ? AND id = ?", (user_id, item_id))
+            await db.commit()
+
     async def get_stats(self) -> Tuple[int, int]:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT COUNT(*) FROM users") as c1:
@@ -299,6 +309,57 @@ class NodeSeekBot:
             keyboard.append([InlineKeyboardButton("⚙️ 管理员面板", callback_data="admin_panel")])
 
         return InlineKeyboardMarkup(keyboard)
+
+    @classmethod
+    async def render_delete_menu(cls, query, context, user_id, is_kw, page=0):
+        table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
+        back_cb = "menu_keywords" if is_kw else "menu_authors"
+        cb_prefix = "del_kw_id:" if is_kw else "del_au_id:"
+        page_prefix = "page_kw:" if is_kw else "page_au:"
+
+        items = await db.get_user_items_with_id(user_id, table, field)
+        if not items:
+            await query.edit_message_text("ℹ️ 当前列表为空。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]]))
+            return
+
+        PAGE_SIZE = 20  # 10 rows of 2
+        total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+        if page >= total_pages:
+            page = total_pages - 1
+
+        context.user_data["del_page"] = page
+
+        start_idx = page * PAGE_SIZE
+        page_items = items[start_idx:start_idx + PAGE_SIZE]
+
+        buttons = []
+        for i in range(0, len(page_items), 2):
+            row = []
+            item1 = page_items[i]
+            # [1] is string, [0] is id.
+            row.append(InlineKeyboardButton(f"❌ {item1[1][:15]}", callback_data=f"{cb_prefix}{item1[0]}"))
+            if i + 1 < len(page_items):
+                item2 = page_items[i+1]
+                row.append(InlineKeyboardButton(f"❌ {item2[1][:15]}", callback_data=f"{cb_prefix}{item2[0]}"))
+            buttons.append(row)
+
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"{page_prefix}{page-1}"))
+        if total_pages > 1:
+            nav_row.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="ignore"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"{page_prefix}{page+1}"))
+        
+        if nav_row:
+            buttons.append(nav_row)
+        buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
+
+        await query.edit_message_text(
+            "🗑️ <b>点击下方按钮即可删除对应规则：</b>",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode=ParseMode.HTML
+        )
 
     # --------------------------
     # 快捷指令模块
@@ -516,46 +577,27 @@ class NodeSeekBot:
             elif data in ("kw_delete_list", "au_delete_list"):
                 await query.answer()
                 is_kw = (data == "kw_delete_list")
-                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
-                back_cb = "menu_keywords" if is_kw else "menu_authors"
-                
-                items = await db.get_user_list_data(user_id, table, field)
-                if not items:
-                    await query.edit_message_text(
-                        "ℹ️ 当前列表为空。", 
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]])
-                    )
-                    return
+                await cls.render_delete_menu(query, context, user_id, is_kw, 0)
 
-                cb_prefix = "del_kw:" if is_kw else "del_au:"
-                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
-                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
+            elif data.startswith("page_kw:") or data.startswith("page_au:"):
+                await query.answer()
+                is_kw = data.startswith("page_kw:")
+                page = int(data.split(":", 1)[1])
+                await cls.render_delete_menu(query, context, user_id, is_kw, page)
 
-                await query.edit_message_text(
-                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
-                    reply_markup=InlineKeyboardMarkup(buttons), 
-                    parse_mode=ParseMode.HTML
-                )
-
-            elif data.startswith("del_kw:") or data.startswith("del_au:"):
-                is_kw = data.startswith("del_kw:")
-                item_to_del = data.split(":", 1)[1]
-                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
+            elif data.startswith("del_kw_id:") or data.startswith("del_au_id:"):
+                is_kw = data.startswith("del_kw_id:")
+                item_id = int(data.split(":", 1)[1])
+                table = "user_blocked_keywords" if is_kw else "user_blocked_authors"
                 
-                await db.remove_user_item(user_id, table, field, item_to_del)
-                await query.answer(f"✅ 已删除: {item_to_del}")
+                await db.remove_user_item_by_id(user_id, table, item_id)
+                await query.answer("✅ 已删除")
                 
-                items = await db.get_user_list_data(user_id, table, field)
-                back_cb = "menu_keywords" if is_kw else "menu_authors"
-                cb_prefix = "del_kw:" if is_kw else "del_au:"
+                page = context.user_data.get("del_page", 0)
+                await cls.render_delete_menu(query, context, user_id, is_kw, page)
                 
-                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
-                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
-                await query.edit_message_text(
-                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
-                    reply_markup=InlineKeyboardMarkup(buttons), 
-                    parse_mode=ParseMode.HTML
-                )
+            elif data == "ignore":
+                await query.answer()
 
             elif data in ("kw_clear", "au_clear"):
                 is_kw = (data == "kw_clear")
