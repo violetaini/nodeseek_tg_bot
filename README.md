@@ -19,13 +19,22 @@
 
 ### 1. 环境准备
 
-确保你已经安装了 Python 3.8+ 版本。
+确保你的服务器已经安装了 Python 3.8+ 版本。
 
-克隆或下载本仓库代码后，安装依赖：
+在服务器终端运行以下命令，直接下载代码并安装依赖：
 
 ```bash
+# 创建并进入目录
+mkdir nodeseek_tg_bot && cd nodeseek_tg_bot
+
+# 使用 wget 直接下载核心文件
+wget https://raw.githubusercontent.com/violetaini/nodeseek_tg_bot/main/bot.py
+wget https://raw.githubusercontent.com/violetaini/nodeseek_tg_bot/main/requirements.txt
+
+# 安装所需依赖
 pip install -r requirements.txt
 ```
+*(如果你习惯使用 Git，也可以直接 `git clone https://github.com/violetaini/nodeseek_tg_bot.git`)*
 
 ### 2. 配置你的机器人
 
