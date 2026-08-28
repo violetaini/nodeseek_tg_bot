@@ -76,11 +76,19 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-3. 启动并设置开机自启：
+3. 设置开机自启并启动服务：
 ```bash
+# 重新加载 systemd 配置
 sudo systemctl daemon-reload
-sudo systemctl start nodeseek_bot
+
+# ⚠️ 关键步骤：设置开机自启动
 sudo systemctl enable nodeseek_bot
+
+# 立即启动服务
+sudo systemctl start nodeseek_bot
+
+# 查看运行状态
+sudo systemctl status nodeseek_bot
 ```
 
 ### 方案 B：使用 PM2
