@@ -333,6 +333,7 @@ class NodeSeekBot:
             "/del_user 名字 - 解除屏蔽某用户\n\n"
             "<b>🔍 其他指令:</b>\n"
             "/list - 查看我当前的配置情况\n"
+            "/toggle_mode - (仅管理员) 切换公有/私有模式\n"
             "/set_interval 秒数 - (仅管理员) 设置轮询间隔"
         )
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -394,6 +395,17 @@ class NodeSeekBot:
         for au in context.args:
             await db.remove_user_item(user_id, "user_blocked_authors", "author", au)
         await update.message.reply_text(f"✅ 成功解除屏蔽用户: {html.escape(', '.join(context.args))}", parse_mode=ParseMode.HTML)
+
+    @classmethod
+    async def toggle_mode_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            return
+        is_pub = await db.is_public_mode()
+        new_state = not is_pub
+        await db.set_config("is_public", "1" if new_state else "0")
+        mode_text = "🌐 公开模式" if new_state else "🔒 私有模式"
+        await update.message.reply_text(f"✅ 系统模式已切换为：{mode_text}")
 
     @classmethod
     async def set_interval_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -588,10 +600,31 @@ class NodeSeekBot:
                 if user_id != ADMIN_ID:
                     return
                 is_pub = await db.is_public_mode()
-                await db.set_config("is_public", "0" if is_pub else "1")
+                new_state = not is_pub
+                await db.set_config("is_public", "1" if new_state else "0")
                 await query.answer("✅ 模式已切换", show_alert=True)
-                query.data = "admin_panel"
-                await cls.callback_router(update, context)
+                
+                total, active = await db.get_stats()
+                max_id = await db.get_max_id()
+                interval = await db.get_check_interval()
+
+                status_text = "🌐 公开模式" if new_state else "🔒 私有模式"
+                toggle_text = "切换为私有模式 🔒" if new_state else "切换为公开模式 🌐"
+
+                text = (
+                    f"⚙️ <b>管理员控制台</b>\n\n"
+                    f"• 运行模式: {status_text}\n"
+                    f"• 总注册人数: {total}\n"
+                    f"• 活跃接收人数: {active}\n"
+                    f"• 当前 Max ID: <code>{max_id}</code>\n"
+                    f"• RSS 轮询间隔: <b>{interval} 秒</b>\n"
+                )
+                keyboard = [
+                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle"),
+                     InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
+                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
+                ]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
             elif data == "admin_change_interval":
                 if user_id != ADMIN_ID:
