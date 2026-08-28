@@ -28,7 +28,7 @@ BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"      # 替换为你的 Telegram Bot Token
 ADMIN_ID = 123456789                   # 替换为你的 Telegram 用户数字 ID
 RSS_URL = "https://rss.nodeseek.com/"
 DB_PATH = Path("nodeseek_bot.db")
-CHECK_INTERVAL = 30                    # RSS 轮询间隔(秒)
+DEFAULT_CHECK_INTERVAL = 30            # 默认 RSS 轮询间隔(秒)
 REQUEST_TIMEOUT = 15
 
 logging.basicConfig(
@@ -78,6 +78,7 @@ class AsyncDBManager:
             """)
             await db.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('max_id', '0')")
             await db.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('is_public', '0')")
+            await db.execute(f"INSERT OR IGNORE INTO system_config (key, value) VALUES ('check_interval', '{DEFAULT_CHECK_INTERVAL}')")
             await db.commit()
 
     async def get_config(self, key: str, default: str) -> str:
@@ -96,6 +97,12 @@ class AsyncDBManager:
 
     async def get_max_id(self) -> int:
         return int(await self.get_config('max_id', '0'))
+
+    async def get_check_interval(self) -> int:
+        return int(await self.get_config('check_interval', str(DEFAULT_CHECK_INTERVAL)))
+
+    async def set_check_interval(self, interval: int):
+        await self.set_config('check_interval', str(interval))
 
     async def get_active_users(self) -> List[int]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -155,290 +162,8 @@ db = AsyncDBManager(DB_PATH)
 
 
 # ==========================
-# 机器人主逻辑类
-# ==========================
-class NodeSeekBot:
-    
-    @staticmethod
-    async def check_permission(user_id: int) -> bool:
-        if user_id == ADMIN_ID:
-            return True
-        return await db.is_public_mode()
-
-    @staticmethod
-    async def build_main_menu(user_id: int) -> InlineKeyboardMarkup:
-        is_active = await db.is_user_active(user_id)
-        active_text = "🟢 接收推送：已开启" if is_active else "🔴 接收推送：已关闭"
-        
-        keyboard = [
-            [InlineKeyboardButton(active_text, callback_data="toggle_active")],
-            [
-                InlineKeyboardButton("📝 屏蔽词设置", callback_data="menu_keywords"),
-                InlineKeyboardButton("👤 屏蔽用户设置", callback_data="menu_authors"),
-            ],
-            [InlineKeyboardButton("📊 查看我的配置", callback_data="view_my_config")],
-        ]
-
-        if user_id == ADMIN_ID:
-            keyboard.append([InlineKeyboardButton("⚙️ 管理员面板", callback_data="admin_panel")])
-
-        return InlineKeyboardMarkup(keyboard)
-
-    @classmethod
-    async def start_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-
-        if not await cls.check_permission(user_id):
-            await update.message.reply_text("⛔ 当前机器人处于<b>私有模式</b>，仅管理员可用。", parse_mode=ParseMode.HTML)
-            return
-
-        await db.add_user(user_id)
-        context.user_data.clear()
-
-        text = (
-            "👋 <b>欢迎使用 NodeSeek RSS 监控助手</b>\n\n"
-            "你可以通过下方按钮自定义属于你的屏蔽规则（关键词、用户名）。\n"
-            "所有用户的规则完全独立，互不影响。"
-        )
-        await update.message.reply_text(
-            text, 
-            reply_markup=await cls.build_main_menu(user_id), 
-            parse_mode=ParseMode.HTML
-        )
-
-    @classmethod
-    async def callback_router(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        user_id = update.effective_user.id
-        data = query.data
-
-        if not await cls.check_permission(user_id):
-            await query.answer("⛔ 权限不足", show_alert=True)
-            return
-
-        # [状态机保护]：只要点击的不是“添加”按钮，立即清除用户的输入等待状态
-        if data not in ("kw_add", "au_add"):
-            context.user_data.pop("action", None)
-
-        try:
-            # 1. 主菜单
-            if data == "main_menu":
-                await query.answer()
-                await query.edit_message_text(
-                    "👋 <b>NodeSeek RSS 监控助手 - 主菜单</b>",
-                    reply_markup=await cls.build_main_menu(user_id),
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 2. 开关推送
-            elif data == "toggle_active":
-                new_state = await db.toggle_user_active(user_id)
-                await query.answer("✅ 已开启推送" if new_state else "❌ 已暂停推送")
-                await query.edit_message_reply_markup(reply_markup=await cls.build_main_menu(user_id))
-
-            # 3. 二级菜单：屏蔽词
-            elif data == "menu_keywords":
-                await query.answer()
-                keyboard = [
-                    [InlineKeyboardButton("➕ 添加屏蔽词", callback_data="kw_add"),
-                     InlineKeyboardButton("🗑️ 删除屏蔽词", callback_data="kw_delete_list")],
-                    [InlineKeyboardButton("🧹 清空屏蔽词", callback_data="kw_clear")],
-                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
-                ]
-                await query.edit_message_text(
-                    "📝 <b>屏蔽关键词管理</b>\n\n命中标题或正文即不推送给您。",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 4. 二级菜单：屏蔽用户
-            elif data == "menu_authors":
-                await query.answer()
-                keyboard = [
-                    [InlineKeyboardButton("➕ 添加屏蔽用户", callback_data="au_add"),
-                     InlineKeyboardButton("🗑️ 删除屏蔽用户", callback_data="au_delete_list")],
-                    [InlineKeyboardButton("🧹 清空屏蔽用户", callback_data="au_clear")],
-                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
-                ]
-                await query.edit_message_text(
-                    "👤 <b>屏蔽作者管理</b>\n\n该用户发布的帖子将不会推送给您。",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 5. 查看配置
-            elif data == "view_my_config":
-                await query.answer()
-                kws = await db.get_user_list_data(user_id, "user_blocked_keywords", "keyword")
-                aus = await db.get_user_list_data(user_id, "user_blocked_authors", "author")
-                is_active = await db.is_user_active(user_id)
-
-                text = (
-                    f"📊 <b>我的配置概览</b>\n\n"
-                    f"• <b>推送状态</b>: {'🟢 开启中' if is_active else '🔴 已暂停'}\n"
-                    f"• <b>屏蔽词 ({len(kws)}个)</b>: <code>{html.escape('、'.join(kws)) if kws else '无'}</code>\n"
-                    f"• <b>屏蔽用户 ({len(aus)}个)</b>: <code>{html.escape('、'.join(aus)) if aus else '无'}</code>\n"
-                )
-                await query.edit_message_text(
-                    text, 
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="main_menu")]]), 
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 6. 添加逻辑 (触发状态机)
-            elif data in ("kw_add", "au_add"):
-                await query.answer()
-                context.user_data["action"] = data
-                label = "屏蔽词" if data == "kw_add" else "屏蔽的用户名"
-                back_cb = "menu_keywords" if data == "kw_add" else "menu_authors"
-                
-                keyboard = [[InlineKeyboardButton("❌ 取消输入", callback_data=back_cb)]]
-                await query.edit_message_text(
-                    f"✍️ <b>请输入要添加的{label}：</b>\n<i>(支持一次发送多个，用空格或换行分隔)</i>",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 7. 删除列表生成
-            elif data in ("kw_delete_list", "au_delete_list"):
-                await query.answer()
-                is_kw = (data == "kw_delete_list")
-                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
-                back_cb = "menu_keywords" if is_kw else "menu_authors"
-                
-                items = await db.get_user_list_data(user_id, table, field)
-                if not items:
-                    await query.edit_message_text(
-                        "ℹ️ 当前列表为空。", 
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]])
-                    )
-                    return
-
-                cb_prefix = "del_kw:" if is_kw else "del_au:"
-                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
-                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
-
-                await query.edit_message_text(
-                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
-                    reply_markup=InlineKeyboardMarkup(buttons), 
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 8. 执行删除
-            elif data.startswith("del_kw:") or data.startswith("del_au:"):
-                is_kw = data.startswith("del_kw:")
-                item_to_del = data.split(":", 1)[1]
-                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
-                
-                await db.remove_user_item(user_id, table, field, item_to_del)
-                await query.answer(f"✅ 已删除: {item_to_del}")
-                
-                # 重新渲染当前删除列表
-                items = await db.get_user_list_data(user_id, table, field)
-                back_cb = "menu_keywords" if is_kw else "menu_authors"
-                cb_prefix = "del_kw:" if is_kw else "del_au:"
-                
-                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
-                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
-                await query.edit_message_text(
-                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
-                    reply_markup=InlineKeyboardMarkup(buttons), 
-                    parse_mode=ParseMode.HTML
-                )
-
-            # 9. 清空逻辑
-            elif data in ("kw_clear", "au_clear"):
-                is_kw = (data == "kw_clear")
-                table = "user_blocked_keywords" if is_kw else "user_blocked_authors"
-                back_cb = "menu_keywords" if is_kw else "menu_authors"
-                
-                await db.clear_user_items(user_id, table)
-                await query.answer("✅ 已全部清空", show_alert=True)
-                await query.edit_message_text(
-                    "🧹 您的配置已清空！", 
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]])
-                )
-
-            # 10. 管理员面板
-            elif data == "admin_panel":
-                if user_id != ADMIN_ID:
-                    return
-                await query.answer()
-                is_pub = await db.is_public_mode()
-                total, active = await db.get_stats()
-                max_id = await db.get_max_id()
-
-                status_text = "🌐 公开模式 (任何人可用)" if is_pub else "🔒 私有模式 (仅管理员可用)"
-                toggle_text = "切换为 私有模式 🔒" if is_pub else "切换为 公开模式 🌐"
-
-                text = (
-                    f"⚙️ <b>管理员控制台</b>\n\n"
-                    f"• 运行模式: {status_text}\n"
-                    f"• 总注册人数: {total}\n"
-                    f"• 活跃接收人数: {active}\n"
-                    f"• 当前 Max ID: <code>{max_id}</code>\n"
-                )
-                keyboard = [
-                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle")],
-                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
-                ]
-                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-
-            elif data == "admin_toggle":
-                if user_id != ADMIN_ID:
-                    return
-                is_pub = await db.is_public_mode()
-                await db.set_config("is_public", "0" if is_pub else "1")
-                await query.answer("✅ 模式已切换", show_alert=True)
-                # 重新触发刷新面板
-                query.data = "admin_panel"
-                await cls.callback_router(update, context)
-
-        except TelegramError as e:
-            if "Message is not modified" not in str(e):
-                logger.error(f"Callback 路由异常: {e}")
-
-    @classmethod
-    async def handle_user_text(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        action = context.user_data.get("action")
-
-        if not action or not update.message.text:
-            return
-
-        items = [item.strip() for item in update.message.text.replace("\n", " ").split() if item.strip()]
-        if not items:
-            return
-
-        if action == "kw_add":
-            await db.add_user_items(user_id, "user_blocked_keywords", "keyword", items)
-            back_cb = "menu_keywords"
-            label = "屏蔽词"
-        elif action == "au_add":
-            await db.add_user_items(user_id, "user_blocked_authors", "author", items)
-            back_cb = "menu_authors"
-            label = "屏蔽用户"
-        else:
-            return
-
-        context.user_data.pop("action", None)
-        keyboard = [
-            [InlineKeyboardButton("➕ 继续添加", callback_data=action),
-             InlineKeyboardButton("⬅️ 返回列表", callback_data=back_cb)],
-            [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")],
-        ]
-        
-        await update.message.reply_text(
-            f"✅ 成功添加 {len(items)} 个{label}：\n<code>{html.escape('、'.join(items))}</code>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.HTML
-        )
-
-
-# ==========================
 # 异步 RSS 抓取与并发分发
 # ==========================
-
 async def fetch_rss_entries_async():
     try:
         async with aiohttp.ClientSession() as session:
@@ -540,6 +265,328 @@ async def rss_poller_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================
+# 机器人主逻辑类
+# ==========================
+class NodeSeekBot:
+    
+    @staticmethod
+    def update_poller_job(context: ContextTypes.DEFAULT_TYPE, new_interval: int):
+        """动态更新轮询任务的间隔"""
+        jobs = context.job_queue.get_jobs_by_name("rss_poller")
+        for job in jobs:
+            job.schedule_removal()
+        context.job_queue.run_repeating(rss_poller_job, interval=new_interval, first=1, name="rss_poller")
+
+    @staticmethod
+    async def check_permission(user_id: int) -> bool:
+        if user_id == ADMIN_ID:
+            return True
+        return await db.is_public_mode()
+
+    @staticmethod
+    async def build_main_menu(user_id: int) -> InlineKeyboardMarkup:
+        is_active = await db.is_user_active(user_id)
+        active_text = "🟢 接收推送：已开启" if is_active else "🔴 接收推送：已关闭"
+        
+        keyboard = [
+            [InlineKeyboardButton(active_text, callback_data="toggle_active")],
+            [
+                InlineKeyboardButton("📝 屏蔽词设置", callback_data="menu_keywords"),
+                InlineKeyboardButton("👤 屏蔽用户设置", callback_data="menu_authors"),
+            ],
+            [InlineKeyboardButton("📊 查看我的配置", callback_data="view_my_config")],
+        ]
+
+        if user_id == ADMIN_ID:
+            keyboard.append([InlineKeyboardButton("⚙️ 管理员面板", callback_data="admin_panel")])
+
+        return InlineKeyboardMarkup(keyboard)
+
+    @classmethod
+    async def start_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+
+        if not await cls.check_permission(user_id):
+            await update.message.reply_text("⛔ 当前机器人处于<b>私有模式</b>，仅管理员可用。", parse_mode=ParseMode.HTML)
+            return
+
+        await db.add_user(user_id)
+        context.user_data.clear()
+
+        text = (
+            "👋 <b>欢迎使用 NodeSeek RSS 监控助手</b>\n\n"
+            "你可以通过下方按钮自定义属于你的屏蔽规则（关键词、用户名）。\n"
+            "所有用户的规则完全独立，互不影响。"
+        )
+        await update.message.reply_text(
+            text, 
+            reply_markup=await cls.build_main_menu(user_id), 
+            parse_mode=ParseMode.HTML
+        )
+
+    @classmethod
+    async def set_interval_cmd(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            return
+        try:
+            new_interval = int(context.args[0])
+            if new_interval < 10:
+                await update.message.reply_text("❌ 间隔不能小于 10 秒。")
+                return
+            await db.set_check_interval(new_interval)
+            cls.update_poller_job(context, new_interval)
+            await update.message.reply_text(f"✅ 轮询间隔已成功更新为 {new_interval} 秒！")
+        except (IndexError, ValueError):
+            await update.message.reply_text("用法: /set_interval <秒数>")
+
+    @classmethod
+    async def callback_router(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        user_id = update.effective_user.id
+        data = query.data
+
+        if not await cls.check_permission(user_id):
+            await query.answer("⛔ 权限不足", show_alert=True)
+            return
+
+        if data not in ("kw_add", "au_add", "admin_change_interval"):
+            context.user_data.pop("action", None)
+
+        try:
+            if data == "main_menu":
+                await query.answer()
+                await query.edit_message_text(
+                    "👋 <b>NodeSeek RSS 监控助手 - 主菜单</b>",
+                    reply_markup=await cls.build_main_menu(user_id),
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data == "toggle_active":
+                new_state = await db.toggle_user_active(user_id)
+                await query.answer("✅ 已开启推送" if new_state else "❌ 已暂停推送")
+                await query.edit_message_reply_markup(reply_markup=await cls.build_main_menu(user_id))
+
+            elif data == "menu_keywords":
+                await query.answer()
+                keyboard = [
+                    [InlineKeyboardButton("➕ 添加屏蔽词", callback_data="kw_add"),
+                     InlineKeyboardButton("🗑️ 删除屏蔽词", callback_data="kw_delete_list")],
+                    [InlineKeyboardButton("🧹 清空屏蔽词", callback_data="kw_clear")],
+                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
+                ]
+                await query.edit_message_text(
+                    "📝 <b>屏蔽关键词管理</b>\n\n命中标题或正文即不推送给您。",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data == "menu_authors":
+                await query.answer()
+                keyboard = [
+                    [InlineKeyboardButton("➕ 添加屏蔽用户", callback_data="au_add"),
+                     InlineKeyboardButton("🗑️ 删除屏蔽用户", callback_data="au_delete_list")],
+                    [InlineKeyboardButton("🧹 清空屏蔽用户", callback_data="au_clear")],
+                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
+                ]
+                await query.edit_message_text(
+                    "👤 <b>屏蔽作者管理</b>\n\n该用户发布的帖子将不会推送给您。",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data == "view_my_config":
+                await query.answer()
+                kws = await db.get_user_list_data(user_id, "user_blocked_keywords", "keyword")
+                aus = await db.get_user_list_data(user_id, "user_blocked_authors", "author")
+                is_active = await db.is_user_active(user_id)
+
+                text = (
+                    f"📊 <b>我的配置概览</b>\n\n"
+                    f"• <b>推送状态</b>: {'🟢 开启中' if is_active else '🔴 已暂停'}\n"
+                    f"• <b>屏蔽词 ({len(kws)}个)</b>: <code>{html.escape('、'.join(kws)) if kws else '无'}</code>\n"
+                    f"• <b>屏蔽用户 ({len(aus)}个)</b>: <code>{html.escape('、'.join(aus)) if aus else '无'}</code>\n"
+                )
+                await query.edit_message_text(
+                    text, 
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data="main_menu")]]), 
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data in ("kw_add", "au_add"):
+                await query.answer()
+                context.user_data["action"] = data
+                label = "屏蔽词" if data == "kw_add" else "屏蔽的用户名"
+                back_cb = "menu_keywords" if data == "kw_add" else "menu_authors"
+                
+                keyboard = [[InlineKeyboardButton("❌ 取消输入", callback_data=back_cb)]]
+                await query.edit_message_text(
+                    f"✍️ <b>请输入要添加的{label}：</b>\n<i>(支持一次发送多个，用空格或换行分隔)</i>",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data in ("kw_delete_list", "au_delete_list"):
+                await query.answer()
+                is_kw = (data == "kw_delete_list")
+                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
+                back_cb = "menu_keywords" if is_kw else "menu_authors"
+                
+                items = await db.get_user_list_data(user_id, table, field)
+                if not items:
+                    await query.edit_message_text(
+                        "ℹ️ 当前列表为空。", 
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]])
+                    )
+                    return
+
+                cb_prefix = "del_kw:" if is_kw else "del_au:"
+                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
+                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
+
+                await query.edit_message_text(
+                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
+                    reply_markup=InlineKeyboardMarkup(buttons), 
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data.startswith("del_kw:") or data.startswith("del_au:"):
+                is_kw = data.startswith("del_kw:")
+                item_to_del = data.split(":", 1)[1]
+                table, field = ("user_blocked_keywords", "keyword") if is_kw else ("user_blocked_authors", "author")
+                
+                await db.remove_user_item(user_id, table, field, item_to_del)
+                await query.answer(f"✅ 已删除: {item_to_del}")
+                
+                items = await db.get_user_list_data(user_id, table, field)
+                back_cb = "menu_keywords" if is_kw else "menu_authors"
+                cb_prefix = "del_kw:" if is_kw else "del_au:"
+                
+                buttons = [[InlineKeyboardButton(f"❌ {item}", callback_data=f"{cb_prefix}{item}")] for item in items]
+                buttons.append([InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)])
+                await query.edit_message_text(
+                    "🗑️ <b>点击下方按钮即可删除对应规则：</b>", 
+                    reply_markup=InlineKeyboardMarkup(buttons), 
+                    parse_mode=ParseMode.HTML
+                )
+
+            elif data in ("kw_clear", "au_clear"):
+                is_kw = (data == "kw_clear")
+                table = "user_blocked_keywords" if is_kw else "user_blocked_authors"
+                back_cb = "menu_keywords" if is_kw else "menu_authors"
+                
+                await db.clear_user_items(user_id, table)
+                await query.answer("✅ 已全部清空", show_alert=True)
+                await query.edit_message_text(
+                    "🧹 您的配置已清空！", 
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=back_cb)]])
+                )
+
+            elif data == "admin_panel":
+                if user_id != ADMIN_ID:
+                    return
+                await query.answer()
+                is_pub = await db.is_public_mode()
+                total, active = await db.get_stats()
+                max_id = await db.get_max_id()
+                interval = await db.get_check_interval()
+
+                status_text = "🌐 公开模式" if is_pub else "🔒 私有模式"
+                toggle_text = "切换为私有模式 🔒" if is_pub else "切换为公开模式 🌐"
+
+                text = (
+                    f"⚙️ <b>管理员控制台</b>\n\n"
+                    f"• 运行模式: {status_text}\n"
+                    f"• 总注册人数: {total}\n"
+                    f"• 活跃接收人数: {active}\n"
+                    f"• 当前 Max ID: <code>{max_id}</code>\n"
+                    f"• RSS 轮询间隔: <b>{interval} 秒</b>\n"
+                )
+                keyboard = [
+                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle"),
+                     InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
+                    [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
+                ]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+            elif data == "admin_toggle":
+                if user_id != ADMIN_ID:
+                    return
+                is_pub = await db.is_public_mode()
+                await db.set_config("is_public", "0" if is_pub else "1")
+                await query.answer("✅ 模式已切换", show_alert=True)
+                query.data = "admin_panel"
+                await cls.callback_router(update, context)
+
+            elif data == "admin_change_interval":
+                if user_id != ADMIN_ID:
+                    return
+                await query.answer()
+                context.user_data["action"] = "waiting_interval_input"
+                keyboard = [[InlineKeyboardButton("❌ 取消输入", callback_data="admin_panel")]]
+                await query.edit_message_text(
+                    "⏱ <b>请输入新的 RSS 轮询间隔（秒）：</b>\n<i>建议不要低于 10 秒。你也可以直接发送指令 /set_interval <秒数></i>",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+
+        except TelegramError as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Callback 路由异常: {e}")
+
+    @classmethod
+    async def handle_user_text(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        action = context.user_data.get("action")
+
+        if not action or not update.message.text:
+            return
+
+        items = [item.strip() for item in update.message.text.replace("\n", " ").split() if item.strip()]
+        if not items:
+            return
+            
+        if action == "waiting_interval_input":
+            try:
+                new_interval = int(items[0])
+                if new_interval < 10:
+                    await update.message.reply_text("❌ 间隔不能小于 10 秒，请重新输入或点击取消。")
+                    return
+                await db.set_check_interval(new_interval)
+                cls.update_poller_job(context, new_interval)
+                context.user_data.pop("action", None)
+                keyboard = [[InlineKeyboardButton("⬅️ 返回控制台", callback_data="admin_panel")]]
+                await update.message.reply_text(f"✅ 轮询间隔已成功更新为 {new_interval} 秒！", reply_markup=InlineKeyboardMarkup(keyboard))
+            except ValueError:
+                await update.message.reply_text("❌ 请输入有效的纯数字（秒数）。")
+            return
+
+        if action == "kw_add":
+            await db.add_user_items(user_id, "user_blocked_keywords", "keyword", items)
+            back_cb = "menu_keywords"
+            label = "屏蔽词"
+        elif action == "au_add":
+            await db.add_user_items(user_id, "user_blocked_authors", "author", items)
+            back_cb = "menu_authors"
+            label = "屏蔽用户"
+        else:
+            return
+
+        context.user_data.pop("action", None)
+        keyboard = [
+            [InlineKeyboardButton("➕ 继续添加", callback_data=action),
+             InlineKeyboardButton("⬅️ 返回列表", callback_data=back_cb)],
+            [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")],
+        ]
+        
+        await update.message.reply_text(
+            f"✅ 成功添加 {len(items)} 个{label}：\n<code>{html.escape('、'.join(items))}</code>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML
+        )
+
+
+# ==========================
 # 启动入口
 # ==========================
 async def main():
@@ -550,11 +597,13 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", NodeSeekBot.start_cmd))
+    app.add_handler(CommandHandler("set_interval", NodeSeekBot.set_interval_cmd))
     app.add_handler(CallbackQueryHandler(NodeSeekBot.callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, NodeSeekBot.handle_user_text))
 
     if app.job_queue:
-        app.job_queue.run_repeating(rss_poller_job, interval=CHECK_INTERVAL, first=5)
+        interval = await db.get_check_interval()
+        app.job_queue.run_repeating(rss_poller_job, interval=interval, first=5, name="rss_poller")
     else:
         logger.error("JobQueue 初始化失败")
         return
