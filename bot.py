@@ -632,8 +632,8 @@ class NodeSeekBot:
                     f"• RSS 轮询间隔: <b>{interval} 秒</b>\n"
                 )
                 keyboard = [
-                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle"),
-                     InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
+                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle")],
+                    [InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
                     [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
                 ]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -662,8 +662,8 @@ class NodeSeekBot:
                     f"• RSS 轮询间隔: <b>{interval} 秒</b>\n"
                 )
                 keyboard = [
-                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle"),
-                     InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
+                    [InlineKeyboardButton(toggle_text, callback_data="admin_toggle")],
+                    [InlineKeyboardButton("⏱ 修改轮询间隔", callback_data="admin_change_interval")],
                     [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="main_menu")],
                 ]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
