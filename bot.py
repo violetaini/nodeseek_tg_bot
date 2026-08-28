@@ -610,6 +610,13 @@ async def main():
 
     logger.info("Bot 已上线启动...")
     await app.initialize()
+    
+    # 自动注册 Telegram 斜杠快捷指令菜单
+    await app.bot.set_my_commands([
+        ("start", "启动助手并打开主菜单"),
+        ("set_interval", "⚙️ 设置 RSS 轮询间隔(仅管理员)")
+    ])
+    
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
     
