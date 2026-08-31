@@ -255,9 +255,9 @@ async def rss_poller_job(context: ContextTypes.DEFAULT_TYPE):
             
         safe_summary = html.escape(clean_summary)
 
-        # 使用 Telegram 最新的 blockquote 语法打造精美卡片
+        # 标题恢复超链接
         text = (
-            f"✨ <b>{safe_title}</b>\n\n"
+            f"✨ <b><a href=\"{link}\">{safe_title}</a></b>\n\n"
             f"<blockquote><i>{safe_summary if safe_summary else '（无内容摘要）'}</i></blockquote>\n"
             f"👤 <b>作者:</b> <code>{safe_author}</code>  |  🏷 <b>NodeSeek</b>"
         )
