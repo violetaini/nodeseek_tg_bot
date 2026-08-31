@@ -248,28 +248,30 @@ async def rss_poller_job(context: ContextTypes.DEFAULT_TYPE):
         safe_title = html.escape(title)
         safe_author = html.escape(author)
         
-        # 清理 HTML 标签并截取摘要
         clean_summary = re.sub('<[^<]+>', '', summary).strip()
-        # 处理特殊空白字符，只取前80字
         clean_summary = " ".join(clean_summary.split())
-        if len(clean_summary) > 80:
-            clean_summary = clean_summary[:80] + "..."
+        if len(clean_summary) > 150:
+            clean_summary = clean_summary[:150] + "..."
             
         safe_summary = html.escape(clean_summary)
 
+        # 使用 Telegram 最新的 blockquote 语法打造精美卡片
         text = (
-            f"📢 <b>{safe_title}</b>\n\n"
-            f"👤 <b>作者:</b> <code>{safe_author}</code>\n"
-            f"📝 <b>摘要:</b> <i>{safe_summary if safe_summary else '无'}</i>"
+            f"✨ <b>{safe_title}</b>\n\n"
+            f"<blockquote><i>{safe_summary if safe_summary else '（无内容摘要）'}</i></blockquote>\n"
+            f"👤 <b>作者:</b> <code>{safe_author}</code>  |  🏷 <b>NodeSeek</b>"
         )
         
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👉 直达原帖", url=link)]])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 参与讨论", url=link)]
+        ])
 
         for uid in target_users:
             if await should_user_block(uid, author, title, summary):
                 continue
 
             try:
+                # 兼容不同版本的 PTB，使用 disable_web_page_preview=True 保持界面纯净
                 await context.bot.send_message(
                     chat_id=uid, 
                     text=text, 
