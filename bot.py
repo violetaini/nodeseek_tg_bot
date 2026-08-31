@@ -785,6 +785,7 @@ async def main():
     app.add_handler(CommandHandler("add_user", NodeSeekBot.add_user_cmd))
     app.add_handler(CommandHandler("del_user", NodeSeekBot.del_user_cmd))
     app.add_handler(CommandHandler("set_interval", NodeSeekBot.set_interval_cmd))
+    app.add_handler(CommandHandler("toggle_mode", NodeSeekBot.toggle_mode_cmd))
     
     # 注册回调与消息
     app.add_handler(CallbackQueryHandler(NodeSeekBot.callback_router))
@@ -809,6 +810,7 @@ async def main():
         ("del_kw", "快速删除屏蔽词"),
         ("add_user", "快速添加屏蔽用户"),
         ("del_user", "快速解除屏蔽用户"),
+        ("toggle_mode", "⚙️ 切换公开/私有模式(仅管理员)"),
         ("set_interval", "⚙️ 设置 RSS 轮询间隔(仅管理员)")
     ])
 
