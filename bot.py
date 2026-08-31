@@ -497,6 +497,12 @@ class NodeSeekBot:
         user_id = update.effective_user.id
         if user_id != ADMIN_ID:
             return
+            
+        if not context.args:
+            current_interval = await db.get_check_interval()
+            await update.message.reply_text(f"ℹ️ 当前的 RSS 轮询间隔为：<b>{current_interval} 秒</b>\n\n如果需要修改，请使用指令：<code>/set_interval &lt;秒数&gt;</code>", parse_mode=ParseMode.HTML)
+            return
+            
         try:
             new_interval = int(context.args[0])
             if new_interval < 10:
@@ -505,8 +511,8 @@ class NodeSeekBot:
             await db.set_check_interval(new_interval)
             cls.update_poller_job(context, new_interval)
             await update.message.reply_text(f"✅ 轮询间隔已成功更新为 {new_interval} 秒！")
-        except (IndexError, ValueError):
-            await update.message.reply_text("用法: /set_interval <秒数>")
+        except ValueError:
+            await update.message.reply_text("❌ 请输入有效的纯数字（秒数）。")
 
 
     # --------------------------
