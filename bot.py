@@ -1,4 +1,5 @@
 import html
+import re
 import logging
 import asyncio
 from datetime import datetime
@@ -245,16 +246,37 @@ async def rss_poller_job(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         safe_title = html.escape(title)
-        safe_link = html.escape(link, quote=True)
         safe_author = html.escape(author)
-        text = f'<b><a href="{safe_link}">{safe_title}</a></b>\n👤 作者: <code>{safe_author}</code>'
+        
+        # 清理 HTML 标签并截取摘要
+        clean_summary = re.sub('<[^<]+>', '', summary).strip()
+        # 处理特殊空白字符，只取前80字
+        clean_summary = " ".join(clean_summary.split())
+        if len(clean_summary) > 80:
+            clean_summary = clean_summary[:80] + "..."
+            
+        safe_summary = html.escape(clean_summary)
+
+        text = (
+            f"📢 <b>{safe_title}</b>\n\n"
+            f"👤 <b>作者:</b> <code>{safe_author}</code>\n"
+            f"📝 <b>摘要:</b> <i>{safe_summary if safe_summary else '无'}</i>"
+        )
+        
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👉 直达原帖", url=link)]])
 
         for uid in target_users:
             if await should_user_block(uid, author, title, summary):
                 continue
 
             try:
-                await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(
+                    chat_id=uid, 
+                    text=text, 
+                    parse_mode=ParseMode.HTML, 
+                    disable_web_page_preview=True,
+                    reply_markup=keyboard
+                )
                 await asyncio.sleep(0.05)
             except Forbidden:
                 logger.warning(f"用户 {uid} 已封禁 Bot，停用该用户推送")
